@@ -72,8 +72,11 @@ class AdTextModal(discord.ui.Modal, title="宣伝文を設定"):
         await upsert_field(interaction.guild_id, "ad_text", self.ad_text.value)
         await interaction.response.send_message("✅ 宣伝文を保存しました。", ephemeral=True)
 
-# ============ スラッシュコマンド ============
-@tree.command(name="招待", description="招待リンクを作成して保存します")
+# ============ スラッシュコマンド（管理者限定） ============
+
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="招待", description="招待リンクを作成して保存します（管理者専用）")
 @app_commands.describe(channel="招待を作成するチャンネル（省略時は現在のチャンネル）")
 async def cmd_invite(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
     target = channel or interaction.channel
@@ -86,11 +89,15 @@ async def cmd_invite(interaction: discord.Interaction, channel: Optional[discord
     await upsert_field(interaction.guild_id, "invite_url", invite.url)
     await interaction.response.send_message(f"✅ 招待リンクを保存しました: {invite.url}", ephemeral=True)
 
-@tree.command(name="宣伝文", description="宣伝文を設定します")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="宣伝文", description="宣伝文を設定します（管理者専用）")
 async def cmd_ad_text(interaction: discord.Interaction):
     await interaction.response.send_modal(AdTextModal())
 
-@tree.command(name="設定", description="宣伝の投稿先チャンネルを設定します")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="設定", description="宣伝の投稿先チャンネルを設定します（管理者専用）")
 @app_commands.describe(channel="投稿先チャンネル（省略時は現在のチャンネル）")
 async def cmd_set_channel(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
     target = channel or interaction.channel
@@ -99,20 +106,26 @@ async def cmd_set_channel(interaction: discord.Interaction, channel: Optional[di
     await upsert_field(interaction.guild_id, "post_channel_id", target.id)
     await interaction.response.send_message(f"✅ 投稿先を {target.mention} に設定しました。", ephemeral=True)
 
-@tree.command(name="宣伝文解除", description="このサーバーの宣伝文を削除します")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="宣伝文解除", description="このサーバーの宣伝文を削除します（管理者専用）")
 async def cmd_remove_ad(interaction: discord.Interaction):
     await db_execute("UPDATE guilds SET ad_text = NULL WHERE guild_id = ?", (interaction.guild_id,))
     await asyncio.to_thread(lambda: _get_conn().commit())
     await interaction.response.send_message("✅ 宣伝文を削除しました。", ephemeral=True)
 
-@tree.command(name="招待解除", description="このサーバーの招待リンクを削除します")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="招待解除", description="このサーバーの招待リンクを削除します（管理者専用）")
 async def cmd_remove_invite(interaction: discord.Interaction):
     await db_execute("UPDATE guilds SET invite_url = NULL WHERE guild_id = ?", (interaction.guild_id,))
     await asyncio.to_thread(lambda: _get_conn().commit())
     await interaction.response.send_message("✅ 招待リンクを削除しました。", ephemeral=True)
 
-# ============ 確認用コマンド ============
-@tree.command(name="宣伝確認", description="現在設定されている宣伝文と招待リンクを確認します")
+# ============ 確認用コマンド（管理者限定） ============
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="宣伝確認", description="現在設定されている宣伝文と招待リンクを確認します（管理者専用）")
 async def cmd_check_ad(interaction: discord.Interaction):
     rs = await db_execute("SELECT ad_text, invite_url FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
     if not rs:
@@ -125,7 +138,9 @@ async def cmd_check_ad(interaction: discord.Interaction):
     embed.add_field(name="招待リンク", value=invite_url if invite_url else "未設定", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@tree.command(name="場所確認", description="宣伝が投稿されるチャンネルを確認します")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="場所確認", description="宣伝が投稿されるチャンネルを確認します（管理者専用）")
 async def cmd_check_channel(interaction: discord.Interaction):
     rs = await db_execute("SELECT post_channel_id FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
     if not rs or not rs[0][0]:
@@ -137,24 +152,43 @@ async def cmd_check_channel(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("⚠️ 投稿先チャンネルが設定されていますが、チャンネルが見つかりません（削除された可能性があります）。再設定してください。", ephemeral=True)
 
-# ============ ヘルプコマンド ============
-@tree.command(name="ヘルプ", description="使用できるコマンドの一覧を表示します")
+# ============ ヘルプコマンド（管理者限定） ============
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@tree.command(name="ヘルプ", description="使用できるコマンドの一覧を表示します（管理者専用）")
 async def cmd_help(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📖 コマンド一覧",
-        description="鯖宣伝BOTで使用できるコマンドの一覧です。",
+        description="鯖宣伝BOTで使用できるコマンドの一覧です（すべて管理者専用）。",
         color=discord.Color.purple()
     )
-    embed.add_field(name="/招待 [チャンネル]", value="指定したチャンネルの招待リンクを作成・保存します。（省略時は現在のチャンネル）", inline=False)
+    embed.add_field(name="/招待 [チャンネル]", value="指定したチャンネルの招待リンクを作成・保存します。", inline=False)
     embed.add_field(name="/宣伝文", value="宣伝文を設定します（入力画面が開きます）。", inline=False)
-    embed.add_field(name="/設定 [チャンネル]", value="宣伝の投稿先チャンネルを設定します。（省略時は現在のチャンネル）", inline=False)
+    embed.add_field(name="/設定 [チャンネル]", value="宣伝の投稿先チャンネルを設定します。", inline=False)
     embed.add_field(name="/宣伝確認", value="現在設定されている宣伝文と招待リンクを確認します。", inline=False)
     embed.add_field(name="/場所確認", value="宣伝が投稿されるチャンネルを確認します。", inline=False)
     embed.add_field(name="/宣伝文解除", value="このサーバーの宣伝文を削除します。", inline=False)
     embed.add_field(name="/招待解除", value="このサーバーの招待リンクを削除します。", inline=False)
-    embed.set_footer(text="各コマンドはサーバー内でのみ有効です。")
-    
+    embed.set_footer(text="※ すべてのコマンドは「管理者」権限を持つユーザーのみ実行可能です。")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ============ エラーハンドリング（権限不足時） ============
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ このコマンドを実行するには「管理者」権限が必要です。",
+            ephemeral=True
+        )
+    else:
+        print(f"[Command Error] {error}")
+        try:
+            await interaction.response.send_message(
+                "⚠️ コマンドの実行中にエラーが発生しました。",
+                ephemeral=True
+            )
+        except discord.InteractionResponded:
+            pass
 
 # ============ 定時投稿（毎日1回） ============
 @tasks.loop(time=dt_time(hour=POST_HOUR, minute=0, tzinfo=JST))
