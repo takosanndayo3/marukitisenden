@@ -9,14 +9,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from flask import Flask
-import turso_serverless as turso  # libsql_client から変更
+import turso_serverless as turso
 
 # ============ 設定 ============
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "file:local.db")
 TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN") or None
-POST_HOUR = int(os.environ.get("POST_HOUR", 12))  # 毎日何時（JST）に投稿するか
-GUILD_ID = os.environ.get("GUILD_ID")  # 開発用: 特定ギルドに即時同期したい場合にIDを指定
+POST_HOUR = int(os.environ.get("POST_HOUR", 12))
+GUILD_ID = os.environ.get("GUILD_ID")
 
 JST = timezone(timedelta(hours=9))
 
@@ -40,7 +40,6 @@ def _get_conn():
     return _db_conn
 
 async def db_execute(sql: str, params=()):
-    """同期DB呼び出しをスレッドプールで実行し、イベントループをブロックしない"""
     conn = _get_conn()
     return await asyncio.to_thread(lambda: conn.execute(sql, params).fetchall())
 
@@ -112,41 +111,50 @@ async def cmd_remove_invite(interaction: discord.Interaction):
     await asyncio.to_thread(lambda: _get_conn().commit())
     await interaction.response.send_message("✅ 招待リンクを削除しました。", ephemeral=True)
 
-
-# ============ 追加コマンド（確認用） ============
-
+# ============ 確認用コマンド ============
 @tree.command(name="宣伝確認", description="現在設定されている宣伝文と招待リンクを確認します")
 async def cmd_check_ad(interaction: discord.Interaction):
     rs = await db_execute("SELECT ad_text, invite_url FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
-    
     if not rs:
         return await interaction.response.send_message("❌ まだ何も設定されていません。", ephemeral=True)
-    
     ad_text, invite_url = rs[0]
-    
     if not ad_text and not invite_url:
         return await interaction.response.send_message("❌ 宣伝文も招待リンクも設定されていません。", ephemeral=True)
-    
     embed = discord.Embed(title="📋 現在の設定確認", color=discord.Color.green())
     embed.add_field(name="宣伝文", value=ad_text if ad_text else "未設定", inline=False)
     embed.add_field(name="招待リンク", value=invite_url if invite_url else "未設定", inline=False)
-    
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="場所確認", description="宣伝が投稿されるチャンネルを確認します")
 async def cmd_check_channel(interaction: discord.Interaction):
     rs = await db_execute("SELECT post_channel_id FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
-    
     if not rs or not rs[0][0]:
         return await interaction.response.send_message("❌ 投稿先チャンネルが設定されていません。`/設定` で設定してください。", ephemeral=True)
-    
     channel_id = rs[0][0]
     channel = bot.get_channel(channel_id)
-    
     if channel:
         await interaction.response.send_message(f"📌 現在の投稿先チャンネルは {channel.mention} です。", ephemeral=True)
     else:
         await interaction.response.send_message("⚠️ 投稿先チャンネルが設定されていますが、チャンネルが見つかりません（削除された可能性があります）。再設定してください。", ephemeral=True)
+
+# ============ ヘルプコマンド ============
+@tree.command(name="ヘルプ", description="使用できるコマンドの一覧を表示します")
+async def cmd_help(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📖 コマンド一覧",
+        description="鯖宣伝BOTで使用できるコマンドの一覧です。",
+        color=discord.Color.purple()
+    )
+    embed.add_field(name="/招待 [チャンネル]", value="指定したチャンネルの招待リンクを作成・保存します。（省略時は現在のチャンネル）", inline=False)
+    embed.add_field(name="/宣伝文", value="宣伝文を設定します（入力画面が開きます）。", inline=False)
+    embed.add_field(name="/設定 [チャンネル]", value="宣伝の投稿先チャンネルを設定します。（省略時は現在のチャンネル）", inline=False)
+    embed.add_field(name="/宣伝確認", value="現在設定されている宣伝文と招待リンクを確認します。", inline=False)
+    embed.add_field(name="/場所確認", value="宣伝が投稿されるチャンネルを確認します。", inline=False)
+    embed.add_field(name="/宣伝文解除", value="このサーバーの宣伝文を削除します。", inline=False)
+    embed.add_field(name="/招待解除", value="このサーバーの招待リンクを削除します。", inline=False)
+    embed.set_footer(text="各コマンドはサーバー内でのみ有効です。")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ============ 定時投稿（毎日1回） ============
 @tasks.loop(time=dt_time(hour=POST_HOUR, minute=0, tzinfo=JST))
@@ -162,16 +170,13 @@ async def daily_ad_post():
             candidates = [a for a in ads if a[0] != guild_id]
             if not candidates:
                 continue
-
             _, ad_text, invite_url = random.choice(candidates)
             channel = bot.get_channel(post_channel_id)
             if channel is None:
                 print(f"[daily_ad_post] チャンネル {post_channel_id} が見つかりません")
                 continue
-
             embed = discord.Embed(title="📢 本日のサーバー宣伝", description=ad_text, color=discord.Color.blue())
             embed.add_field(name="招待リンク", value=invite_url, inline=False)
-
             try:
                 await channel.send(embed=embed)
             except discord.Forbidden:
@@ -206,7 +211,7 @@ async def on_ready():
         print(f"定時投稿タスク開始（毎日 {POST_HOUR}時 JST）")
     print("準備完了")
 
-# ============ ヘルスチェック（Render Web Service用） ============
+# ============ ヘルスチェック ============
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
