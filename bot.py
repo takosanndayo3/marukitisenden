@@ -17,14 +17,14 @@ TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "file:local.db")
 TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN") or None
 POST_HOUR = int(os.environ.get("POST_HOUR", 12))
 GUILD_ID = os.environ.get("GUILD_ID")
-MIN_HUMANS = 10  # 登録に必要な最低人間数
+MIN_HUMANS = 10
 
 JST = timezone(timedelta(hours=9))
 
 # ============ Bot 初期化 ============
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # ← 人間の人数を数えるために必須（Developer PortalでのONも必要）
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
@@ -63,13 +63,10 @@ async def upsert_field(guild_id: int, column: str, value):
 
 # ============ カスタムチェック：人間の人数制限 ============
 def require_min_humans(min_count: int = MIN_HUMANS):
-    """BOTを除いた人間のメンバーが min_count 人以上いるかチェックするデコレータ"""
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.guild is None:
             raise app_commands.CheckFailure("このコマンドはサーバー内でのみ実行できます。")
-
         human_count = sum(1 for m in interaction.guild.members if not m.bot)
-
         if human_count < min_count:
             raise app_commands.CheckFailure(
                 f"荒らし対策のため、**人間のメンバーが{min_count}人以上**のサーバーでのみ登録できます。\n"
@@ -80,25 +77,47 @@ def require_min_humans(min_count: int = MIN_HUMANS):
 
 # ============ 宣伝文モーダル ============
 class AdTextModal(discord.ui.Modal, title="宣伝文を設定"):
-    ad_text = discord.ui.TextInput(
-        label="宣伝文",
-        style=discord.TextStyle.long,
-        placeholder="サーバーの宣伝文を入力してください（最大1000文字）",
-        max_length=1000,
-        required=True,
-    )
+    def __init__(self, edit_mode: bool = False, default_text: str = ""):
+        super().__init__()
+        self.edit_mode = edit_mode
+        self.ad_text = discord.ui.TextInput(
+            label="宣伝文",
+            style=discord.TextStyle.long,
+            placeholder="サーバーの宣伝文を入力してください（最大1000文字）",
+            max_length=1000,
+            required=True,
+            default=default_text,
+        )
+        self.add_item(self.ad_text)
+
     async def on_submit(self, interaction: discord.Interaction):
+        # モーダル送信時にも登録状態を再チェック（二重送信対策）
+        rs = await db_execute("SELECT ad_text FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
+        current = rs[0][0] if rs else None
+
+        if self.edit_mode:
+            if not current:
+                return await interaction.response.send_message("❌ 宣伝文が登録されていません。新規登録は `/宣伝文` から行ってください。", ephemeral=True)
+        else:
+            if current:
+                return await interaction.response.send_message("❌ すでに宣伝文が登録されています。編集するには `/宣伝文編集` を使用してください。", ephemeral=True)
+
         await upsert_field(interaction.guild_id, "ad_text", self.ad_text.value)
         await interaction.response.send_message("✅ 宣伝文を保存しました。", ephemeral=True)
 
 # ============ スラッシュコマンド（管理者限定 + 人数制限） ============
 
-@tree.command(name="招待", description="招待リンクを作成して保存します（管理者専用）")
+@tree.command(name="招待", description="招待リンクを新規登録します（管理者専用）")
 @app_commands.default_permissions(administrator=True)
 @app_commands.checks.has_permissions(administrator=True)
 @require_min_humans()
 @app_commands.describe(channel="招待を作成するチャンネル（省略時は現在のチャンネル）")
 async def cmd_invite(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+    # すでに登録されているかチェック
+    rs = await db_execute("SELECT invite_url FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
+    if rs and rs[0][0]:
+        return await interaction.response.send_message("❌ すでに招待リンクが登録されています。編集するには `/招待編集` を使用してください。", ephemeral=True)
+
     target = channel or interaction.channel
     if not isinstance(target, discord.TextChannel):
         return await interaction.response.send_message("❌ テキストチャンネルを指定してください。", ephemeral=True)
@@ -107,14 +126,46 @@ async def cmd_invite(interaction: discord.Interaction, channel: Optional[discord
     except (discord.Forbidden, discord.HTTPException) as e:
         return await interaction.response.send_message(f"❌ 招待を作成できませんでした（{e}）。権限を確認してください。", ephemeral=True)
     await upsert_field(interaction.guild_id, "invite_url", invite.url)
-    await interaction.response.send_message(f"✅ 招待リンクを保存しました: {invite.url}", ephemeral=True)
+    await interaction.response.send_message(f"✅ 招待リンクを登録しました: {invite.url}", ephemeral=True)
 
-@tree.command(name="宣伝文", description="宣伝文を設定します（管理者専用）")
+@tree.command(name="招待編集", description="登録済みの招待リンクを新しいものに差し替えます（管理者専用）")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@require_min_humans()
+@app_commands.describe(channel="招待を作成するチャンネル（省略時は現在のチャンネル）")
+async def cmd_invite_edit(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+    # 登録済みかチェック
+    rs = await db_execute("SELECT invite_url FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
+    if not rs or not rs[0][0]:
+        return await interaction.response.send_message("❌ 招待リンクが登録されていません。新規登録は `/招待` から行ってください。", ephemeral=True)
+
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        return await interaction.response.send_message("❌ テキストチャンネルを指定してください。", ephemeral=True)
+    try:
+        invite = await target.create_invite(max_age=0, max_uses=0, unique=True, reason="鯖宣伝BOT用（編集）")
+    except (discord.Forbidden, discord.HTTPException) as e:
+        return await interaction.response.send_message(f"❌ 招待を作成できませんでした（{e}）。権限を確認してください。", ephemeral=True)
+    await upsert_field(interaction.guild_id, "invite_url", invite.url)
+    await interaction.response.send_message(f"✅ 招待リンクを更新しました: {invite.url}", ephemeral=True)
+
+@tree.command(name="宣伝文", description="宣伝文を新規登録します（管理者専用）")
 @app_commands.default_permissions(administrator=True)
 @app_commands.checks.has_permissions(administrator=True)
 @require_min_humans()
 async def cmd_ad_text(interaction: discord.Interaction):
-    await interaction.response.send_modal(AdTextModal())
+    await interaction.response.send_modal(AdTextModal(edit_mode=False))
+
+@tree.command(name="宣伝文編集", description="登録済みの宣伝文を編集します（管理者専用）")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@require_min_humans()
+async def cmd_ad_text_edit(interaction: discord.Interaction):
+    rs = await db_execute("SELECT ad_text FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
+    if not rs or not rs[0][0]:
+        return await interaction.response.send_message("❌ 宣伝文が登録されていません。新規登録は `/宣伝文` から行ってください。", ephemeral=True)
+    default_text = rs[0][0]
+    await interaction.response.send_modal(AdTextModal(edit_mode=True, default_text=default_text))
 
 @tree.command(name="設定", description="宣伝の投稿先チャンネルを設定します（管理者専用）")
 @app_commands.default_permissions(administrator=True)
@@ -184,8 +235,10 @@ async def cmd_help(interaction: discord.Interaction):
         description="鯖宣伝BOTで使用できるコマンドの一覧です（すべて管理者専用）。",
         color=discord.Color.purple()
     )
-    embed.add_field(name="/招待 [チャンネル]", value=f"招待リンクを作成・保存します（人間{MIN_HUMANS}人以上のサーバー限定）。", inline=False)
-    embed.add_field(name="/宣伝文", value=f"宣伝文を設定します（人間{MIN_HUMANS}人以上のサーバー限定）。", inline=False)
+    embed.add_field(name="/招待 [チャンネル]", value=f"招待リンクを新規登録します（人間{MIN_HUMANS}人以上のサーバー限定）。", inline=False)
+    embed.add_field(name="/招待編集 [チャンネル]", value="登録済みの招待リンクを新しいものに差し替えます。", inline=False)
+    embed.add_field(name="/宣伝文", value=f"宣伝文を新規登録します（人間{MIN_HUMANS}人以上のサーバー限定）。", inline=False)
+    embed.add_field(name="/宣伝文編集", value="登録済みの宣伝文を編集します。", inline=False)
     embed.add_field(name="/設定 [チャンネル]", value=f"宣伝の投稿先チャンネルを設定します（人間{MIN_HUMANS}人以上のサーバー限定）。", inline=False)
     embed.add_field(name="/宣伝確認", value="現在設定されている宣伝文と招待リンクを確認します。", inline=False)
     embed.add_field(name="/場所確認", value="宣伝が投稿されるチャンネルを確認します。", inline=False)
@@ -197,13 +250,11 @@ async def cmd_help(interaction: discord.Interaction):
 # ============ エラーハンドリング ============
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    # 管理者権限不足
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message(
             "❌ このコマンドを実行するには「管理者」権限が必要です。",
             ephemeral=True
         )
-    # 人数制限（カスタムチェック）
     elif isinstance(error, app_commands.CheckFailure):
         await interaction.response.send_message(str(error), ephemeral=True)
     else:
