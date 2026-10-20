@@ -300,6 +300,12 @@ async def daily_ad_post():
 # ============ 起動処理 ============
 @bot.event
 async def on_ready():
+
+    await bot.change_presence(
+        activity=discord.Game(name="サーバーを宣伝中 | /ヘルプ")
+    )
+
+
     print(f"ログイン: {bot.user}")
     try:
         await db_init()
