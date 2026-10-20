@@ -27,13 +27,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 # ============ DB 接続管理 ============
-# turso_serverless は sqlite3 互換の同期APIを提供するため、asyncio.to_thread でラップして使用します。
 _db_conn = None
 
 def _get_conn():
     global _db_conn
     if _db_conn is None:
-        # Render の無料枠では libsql:// より https:// を明示する方が安定します。
         url = TURSO_URL.replace("libsql://", "https://") if TURSO_URL.startswith("libsql://") else TURSO_URL
         if TURSO_TOKEN:
             _db_conn = turso.connect(url, auth_token=TURSO_TOKEN)
@@ -114,20 +112,54 @@ async def cmd_remove_invite(interaction: discord.Interaction):
     await asyncio.to_thread(lambda: _get_conn().commit())
     await interaction.response.send_message("✅ 招待リンクを削除しました。", ephemeral=True)
 
+
+# ============ 追加コマンド（確認用） ============
+
+@tree.command(name="宣伝確認", description="現在設定されている宣伝文と招待リンクを確認します")
+async def cmd_check_ad(interaction: discord.Interaction):
+    rs = await db_execute("SELECT ad_text, invite_url FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
+    
+    if not rs:
+        return await interaction.response.send_message("❌ まだ何も設定されていません。", ephemeral=True)
+    
+    ad_text, invite_url = rs[0]
+    
+    if not ad_text and not invite_url:
+        return await interaction.response.send_message("❌ 宣伝文も招待リンクも設定されていません。", ephemeral=True)
+    
+    embed = discord.Embed(title="📋 現在の設定確認", color=discord.Color.green())
+    embed.add_field(name="宣伝文", value=ad_text if ad_text else "未設定", inline=False)
+    embed.add_field(name="招待リンク", value=invite_url if invite_url else "未設定", inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@tree.command(name="場所確認", description="宣伝が投稿されるチャンネルを確認します")
+async def cmd_check_channel(interaction: discord.Interaction):
+    rs = await db_execute("SELECT post_channel_id FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
+    
+    if not rs or not rs[0][0]:
+        return await interaction.response.send_message("❌ 投稿先チャンネルが設定されていません。`/設定` で設定してください。", ephemeral=True)
+    
+    channel_id = rs[0][0]
+    channel = bot.get_channel(channel_id)
+    
+    if channel:
+        await interaction.response.send_message(f"📌 現在の投稿先チャンネルは {channel.mention} です。", ephemeral=True)
+    else:
+        await interaction.response.send_message("⚠️ 投稿先チャンネルが設定されていますが、チャンネルが見つかりません（削除された可能性があります）。再設定してください。", ephemeral=True)
+
 # ============ 定時投稿（毎日1回） ============
 @tasks.loop(time=dt_time(hour=POST_HOUR, minute=0, tzinfo=JST))
 async def daily_ad_post():
     try:
-        # 投稿先が設定されているギルド
         targets = await db_execute("SELECT guild_id, post_channel_id FROM guilds WHERE post_channel_id IS NOT NULL")
-        # 宣伝可能な広告（宣伝文と招待URLの両方があるもの）
         ads = await db_execute("SELECT guild_id, ad_text, invite_url FROM guilds WHERE ad_text IS NOT NULL AND invite_url IS NOT NULL")
 
         if not ads:
             return print("[daily_ad_post] 宣伝可能な広告がまだありません")
 
         for guild_id, post_channel_id in targets:
-            candidates = [a for a in ads if a[0] != guild_id]  # 自サーバー以外から選ぶ
+            candidates = [a for a in ads if a[0] != guild_id]
             if not candidates:
                 continue
 
@@ -160,7 +192,6 @@ async def on_ready():
         return print(f"DB初期化エラー: {e}")
 
     try:
-        # GUILD_ID が設定されていればそのギルドに即時同期（開発用）、なければグローバル同期（本番用）
         if GUILD_ID:
             synced = await tree.sync(guild=discord.Object(id=int(GUILD_ID)))
             print(f"ギルド同期完了: {len(synced)}件（GUILD_ID={GUILD_ID}）")
