@@ -233,17 +233,6 @@ async def cmd_check_channel(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("⚠️ 投稿先チャンネルが設定されていますが、チャンネルが見つかりません（削除された可能性があります）。再設定してください。", ephemeral=True)
 
-@tree.command(name="テスト送信", description="定時投稿の処理を手動で実行します（管理者専用）")
-@app_commands.default_permissions(administrator=True)
-@app_commands.checks.has_permissions(administrator=True)
-async def cmd_test_post(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        await daily_ad_post()
-        await interaction.followup.send("✅ テスト送信を実行しました。ログを確認してください。", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
-
 # ============ ヘルプコマンド（管理者限定） ============
 @tree.command(name="ヘルプ", description="使用できるコマンドの一覧を表示します（管理者専用）")
 @app_commands.default_permissions(administrator=True)
