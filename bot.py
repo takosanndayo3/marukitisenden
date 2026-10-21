@@ -9,7 +9,6 @@ from flask import Flask, request
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from flask import Flask
 import turso_serverless as turso
 
 # ============ 設定 ============
@@ -99,7 +98,6 @@ class AdTextModal(discord.ui.Modal, title="宣伝文を設定"):
         self.add_item(self.ad_text)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # モーダル送信時にも登録状態を再チェック（二重送信対策）
         rs = await db_execute("SELECT ad_text FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
         current = rs[0][0] if rs else None
 
@@ -113,7 +111,7 @@ class AdTextModal(discord.ui.Modal, title="宣伝文を設定"):
         await upsert_field(interaction.guild_id, "ad_text", self.ad_text.value)
         await interaction.response.send_message("✅ 宣伝文を保存しました。", ephemeral=True)
 
-# ============ スラッシュコマンド（管理者限定 + 人数制限） ============
+# ============ スラッシュコマンド ============
 
 @tree.command(name="招待", description="招待リンクを新規登録します（管理者専用）")
 @app_commands.default_permissions(administrator=True)
@@ -121,7 +119,6 @@ class AdTextModal(discord.ui.Modal, title="宣伝文を設定"):
 @require_min_humans()
 @app_commands.describe(channel="招待を作成するチャンネル（省略時は現在のチャンネル）")
 async def cmd_invite(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
-    # すでに登録されているかチェック
     rs = await db_execute("SELECT invite_url FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
     if rs and rs[0][0]:
         return await interaction.response.send_message("❌ すでに招待リンクが登録されています。編集するには `/招待編集` を使用してください。", ephemeral=True)
@@ -142,7 +139,6 @@ async def cmd_invite(interaction: discord.Interaction, channel: Optional[discord
 @require_min_humans()
 @app_commands.describe(channel="招待を作成するチャンネル（省略時は現在のチャンネル）")
 async def cmd_invite_edit(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
-    # 登録済みかチェック
     rs = await db_execute("SELECT invite_url FROM guilds WHERE guild_id = ?", (interaction.guild_id,))
     if not rs or not rs[0][0]:
         return await interaction.response.send_message("❌ 招待リンクが登録されていません。新規登録は `/招待` から行ってください。", ephemeral=True)
@@ -203,7 +199,6 @@ async def cmd_remove_invite(interaction: discord.Interaction):
     await asyncio.to_thread(lambda: _get_conn().commit())
     await interaction.response.send_message("✅ 招待リンクを削除しました。", ephemeral=True)
 
-# ============ 確認用コマンド（管理者限定） ============
 @tree.command(name="宣伝確認", description="現在設定されている宣伝文と招待リンクを確認します（管理者専用）")
 @app_commands.default_permissions(administrator=True)
 @app_commands.checks.has_permissions(administrator=True)
@@ -233,7 +228,6 @@ async def cmd_check_channel(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("⚠️ 投稿先チャンネルが設定されていますが、チャンネルが見つかりません（削除された可能性があります）。再設定してください。", ephemeral=True)
 
-# ============ ヘルプコマンド（管理者限定） ============
 @tree.command(name="ヘルプ", description="使用できるコマンドの一覧を表示します（管理者専用）")
 @app_commands.default_permissions(administrator=True)
 @app_commands.checks.has_permissions(administrator=True)
@@ -259,19 +253,13 @@ async def cmd_help(interaction: discord.Interaction):
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            "❌ このコマンドを実行するには「管理者」権限が必要です。",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ このコマンドを実行するには「管理者」権限が必要です。", ephemeral=True)
     elif isinstance(error, app_commands.CheckFailure):
         await interaction.response.send_message(str(error), ephemeral=True)
     else:
         print(f"[Command Error] {error}")
         try:
-            await interaction.response.send_message(
-                "⚠️ コマンドの実行中にエラーが発生しました。",
-                ephemeral=True
-            )
+            await interaction.response.send_message("⚠️ コマンドの実行中にエラーが発生しました。", ephemeral=True)
         except discord.InteractionResponded:
             pass
 
@@ -308,12 +296,7 @@ async def daily_ad_post():
 # ============ 起動処理 ============
 @bot.event
 async def on_ready():
-
-    await bot.change_presence(
-        activity=discord.Game(name="サーバーを宣伝中 | /ヘルプ")
-    )
-
-
+    await bot.change_presence(activity=discord.Game(name="サーバーを宣伝中 | /ヘルプ"))
     print(f"ログイン: {bot.user}")
     try:
         await db_init()
@@ -336,12 +319,29 @@ async def on_ready():
         print(f"定時投稿タスク開始（毎日 {POST_HOUR}時 JST）")
     print("準備完了")
 
-# ============ ヘルスチェック ============
+# ============ ヘルスチェック & 外部トリガー ============
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def health_check():
     return "OK", 200
+
+@flask_app.route("/trigger")
+def trigger_daily_post():
+    """cron-job.orgなどの外部サービスから叩いて定時投稿を実行させるエンドポイント"""
+    # セキュリティ用のトークン（環境変数 TRIGGER_TOKEN と一致するか確認）
+    expected_token = os.environ.get("TRIGGER_TOKEN", "")
+    if expected_token and request.args.get("token") != expected_token:
+        return "Unauthorized", 401
+
+    if bot.is_ready():
+        # Flaskは別スレッドで動いているため、BOTのイベントループに安全にタスクを登録する
+        asyncio.run_coroutine_threadsafe(daily_ad_post(), bot.loop)
+        print("[trigger] cron-job.org からのリクエストを受信し、投稿処理を開始しました。")
+        return "Triggered", 200
+    else:
+        print("[trigger] BOTの準備ができていません。")
+        return "Bot not ready", 503
 
 def _run_web_server():
     port = int(os.environ.get("PORT", 8080))
