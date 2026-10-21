@@ -283,9 +283,9 @@ async def daily_ad_post():
                 print(f"[daily_ad_post] チャンネル {post_channel_id} が見つかりません")
                 continue
             embed = discord.Embed(title="📢 本日のサーバー宣伝", description=ad_text, color=discord.Color.blue())
-            embed.add_field(name="招待リンク", value=invite_url, inline=False)
             try:
-                await channel.send(embed=embed)
+                # 招待リンクは通常のメッセージ（content）として、宣伝文はEmbedとして送信する
+                await channel.send(content=invite_url, embed=embed)
             except discord.Forbidden:
                 print(f"[daily_ad_post] {post_channel_id} に投稿する権限がありません")
             except Exception as e:
