@@ -43,7 +43,14 @@ def _get_conn():
 
 async def db_execute(sql: str, params=()):
     conn = _get_conn()
-    return await asyncio.to_thread(lambda: conn.execute(sql, params).fetchall())
+    try:
+        return await asyncio.to_thread(lambda: conn.execute(sql, params).fetchall())
+    except Exception as e:
+        print(f"[DB Error] {e} - 再接続を試みます")
+        global _db_conn
+        _db_conn = None  # 接続をリセット
+        conn = _get_conn()
+        return await asyncio.to_thread(lambda: conn.execute(sql, params).fetchall())
 
 async def db_init():
     await db_execute("""
